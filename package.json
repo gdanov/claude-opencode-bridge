@@ -1,0 +1,22 @@
+{
+  "name": "opencode-claude-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OpenCode plugin that bridges Claude Code skills, commands, agents, plugins, hooks, and MCP servers into OpenCode.",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.1.0",
+    "@types/bun": "1.4.0",
+    "typescript": "5.9.3"
+  }
+}
