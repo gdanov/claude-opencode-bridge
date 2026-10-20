@@ -53,7 +53,7 @@ Every option is optional. Pass them in `opencode.json`:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
+  "plugins": [
     {
       "package": "./plugins/claude-bridge",
       "options": {
