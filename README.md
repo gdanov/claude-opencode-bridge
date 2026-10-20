@@ -7,6 +7,10 @@ bridge reads the Claude Code configuration tree and registers what it finds
 with OpenCode's own registries, so a Claude Code skill, command, agent,
 plugin, hook, or MCP server keeps working after moving to OpenCode.
 
+Targets the OpenCode V2 plugin API. A V1 plugin does not load on V2: it
+exports a named function, while V2 requires a default export with an `id` and
+a `setup` or `effect` function.
+
 ## What it bridges
 
 | Claude Code | OpenCode | How |
@@ -79,6 +83,13 @@ Every option is optional. Pass them in `opencode.json`:
 | `hooks` | `true` | Run Claude Code hooks |
 | `instructions` | `true` | Load `CLAUDE.md` and `.claude/rules` into the system prompt |
 | `excludePlugins` | `[]` | Plugin names to skip, by name |
+
+`excludePlugins` skips a Claude Code plugin entirely — its assets and its
+hooks. Use it when OpenCode already provides the same integration another way.
+The Warp notifications, for instance, are provided natively by
+[opencode-warp](https://github.com/gdanov/opencode-warp), which raises them
+from the terminal client; the Claude Code `warp` plugin's hooks run in the
+OpenCode service, which has no terminal, so they cannot reach Warp.
 
 ## How hooks are bridged
 
