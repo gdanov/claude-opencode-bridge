@@ -2,6 +2,7 @@
   "name": "opencode-claude-bridge",
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
   "description": "OpenCode plugin that bridges Claude Code skills, commands, agents, plugins, hooks, and MCP servers into OpenCode.",
   "exports": {
     ".": "./index.ts"
