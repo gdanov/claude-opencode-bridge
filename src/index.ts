@@ -28,6 +28,7 @@ import { namedArguments, readFrontmatter, substitute } from "./claude/frontmatte
 import { matchesAnyPath, readRulePaths as rulePaths, type Rule } from "./claude/rules.ts"
 import { discoverPlugins, readSettings, type ClaudePlugin, type ClaudeSettings } from "./claude/plugins.ts"
 import { resolveModel, type ModelRef } from "./claude/models.ts"
+import { readModelPolicy, type ModelPolicy } from "./claude/model-policy.ts"
 import type { Model } from "@opencode/plugin"
 import { isDirectory, isFile, readJSON, resolveRoots, type ClaudeRoots } from "./claude/paths.ts"
 import {
@@ -52,9 +53,11 @@ export interface BridgeOptions {
   readonly instructions?: boolean
   /** Plugin names to leave out, by plugin name. */
   readonly excludePlugins?: readonly string[]
+  /** Path of the model policy file; the default path is used when unset. */
+  readonly modelPolicy?: string
 }
 
-const DEFAULTS: Required<Omit<BridgeOptions, "excludePlugins">> = {
+const DEFAULTS: Required<Omit<BridgeOptions, "excludePlugins" | "modelPolicy">> = {
   commands: true,
   agents: true,
   pluginSkills: true,
@@ -99,12 +102,13 @@ const bridge: BridgePlugin = {
 
     const scopes = collectScopes(roots, plugins)
     const models = await availableModels(ctx)
+    const policy = readModelPolicy(options.modelPolicy)
 
     if (options.commands) {
-      for (const scope of scopes) registerCommands(ctx, scope, models)
+      for (const scope of scopes) registerCommands(ctx, scope, models, policy)
     }
     if (options.agents) {
-      for (const scope of scopes) registerAgents(ctx, scope, models)
+      for (const scope of scopes) registerAgents(ctx, scope, models, policy)
     }
     if (options.pluginSkills) {
       for (const plugin of plugins) registerPluginSkills(ctx, plugin)
@@ -165,7 +169,7 @@ function collectScopes(roots: ClaudeRoots, plugins: ClaudePlugin[]): Scope[] {
  * OpenCode uses the same conventions, so the body is carried over and
  * expanded when the command runs.
  */
-function registerCommands(ctx: any, scope: Scope, models: Model.Info[]): void {
+function registerCommands(ctx: any, scope: Scope, models: Model.Info[], policy: ModelPolicy): void {
   const commands = scanCommands(path.join(scope.root, "commands"), scope.plugin)
   if (commands.length === 0) return
   void ctx.command.transform((editor: any) => {
@@ -173,7 +177,10 @@ function registerCommands(ctx: any, scope: Scope, models: Model.Info[]): void {
       const description = stringField(command.frontmatter.data, "description")
       const body = command.frontmatter.content
       const declared = namedArguments(command.frontmatter.data)
-      const model = resolveModel(stringField(command.frontmatter.data, "model"), models)
+      const model = resolveModel(stringField(command.frontmatter.data, "model"), models, {
+        effort: stringField(command.frontmatter.data, "effort"),
+        policy,
+      })
       editor.add({
         name: command.id,
         ...(description === undefined ? {} : { description }),
@@ -208,14 +215,17 @@ function registerCommands(ctx: any, scope: Scope, models: Model.Info[]): void {
  * Claude Code agents are subagents, so they are registered with the
  * `subagent` mode and their body becomes the system prompt.
  */
-function registerAgents(ctx: any, scope: Scope, models: Model.Info[]): void {
+function registerAgents(ctx: any, scope: Scope, models: Model.Info[], policy: ModelPolicy): void {
   const agents = scanAgents(path.join(scope.root, "agents"), scope.plugin)
   if (agents.length === 0) return
   void ctx.agent.transform((editor: any) => {
     for (const agent of agents) {
       const description = stringField(agent.frontmatter.data, "description")
       const body = agent.frontmatter.content
-      const model = resolveModel(stringField(agent.frontmatter.data, "model"), models)
+      const model = resolveModel(stringField(agent.frontmatter.data, "model"), models, {
+        effort: stringField(agent.frontmatter.data, "effort"),
+        policy,
+      })
       editor.update(agent.id, (info: any) => {
         info.name = stringField(agent.frontmatter.data, "name") ?? agent.name
         info.mode = "subagent"
