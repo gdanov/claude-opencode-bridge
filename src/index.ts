@@ -24,7 +24,8 @@ import {
   type ClaudeHookHandler,
 } from "./claude/hooks.ts"
 import { expandHookArgs, expandHookPaths, runHook, type HookEvent } from "./claude/hook-runner.ts"
-import { namedArguments, substitute } from "./claude/frontmatter.ts"
+import { namedArguments, readFrontmatter, substitute } from "./claude/frontmatter.ts"
+import { matchesAnyPath, readRulePaths as rulePaths, type Rule } from "./claude/rules.ts"
 import { discoverPlugins, readSettings, type ClaudePlugin, type ClaudeSettings } from "./claude/plugins.ts"
 import { resolveModel, type ModelRef } from "./claude/models.ts"
 import type { Model } from "@opencode/plugin"
@@ -571,39 +572,118 @@ async function runHookCommand(
  * `CLAUDE.md` files and `.claude/rules` entries are project-level guidance
  * that Claude Code reads directly. OpenCode only reads `AGENTS.md`, so the
  * bridge adds the Claude Code files to the system prompt instead.
+ *
+ * A rule that carries a `paths` frontmatter field is scoped to files that
+ * match it, and Claude Code only loads such a rule once a matching file is
+ * touched. The bridge keeps that behaviour by tracking the files a session
+ * touches and adding the matching rules once one of them appears.
  */
 function installInstructions(ctx: any, roots: ClaudeRoots, projectDir: string): void {
-  const files = collectInstructionFiles(roots, projectDir)
-  if (files.length === 0) return
+  const always = collectInstructionFiles(roots, projectDir, false)
+  const scoped = collectInstructionFiles(roots, projectDir, true)
+  if (always.length === 0 && scoped.length === 0) return
+
+  const touched = new Map<string, Set<string>>()
+
+  void ctx.tool.hook("execute.before", async (event: any) => {
+    const file = touchedPath(event.tool, event.input)
+    if (!file) return
+    const seen = touched.get(event.sessionID) ?? new Set<string>()
+    seen.add(file)
+    touched.set(event.sessionID, seen)
+  })
+
   void ctx.session.hook("context", async (event: any) => {
     const parts: string[] = []
-    for (const file of files) {
-      const text = readTextFile(file)
-      if (text) parts.push(`<claude_md path="${file}">\n${text}\n</claude_md>`)
+    for (const item of always) {
+      const text = readTextFile(item.file)
+      if (text) parts.push(formatInstruction(item.file, text))
+    }
+    const seen = touched.get(event.sessionID)
+    if (seen) {
+      for (const rule of scoped) {
+        if (!rule.paths?.some((pattern) => matchesAnyPath([pattern], seen, projectDir))) continue
+        const text = readTextFile(rule.file)
+        if (text) parts.push(formatInstruction(rule.file, text))
+      }
     }
     if (parts.length === 0) return
     event.system.push({ type: "text", text: parts.join("\n\n") })
   })
 }
 
-/** Collect the instruction files that apply to a project directory. */
-function collectInstructionFiles(roots: ClaudeRoots, projectDir: string): string[] {
-  const files: string[] = []
+/**
+ * Collect the instruction files that apply to a project directory.
+ *
+ * The search walks up from the project directory, so a repository-level
+ * `CLAUDE.md` is found from a subdirectory, as Claude Code does.
+ */
+function collectInstructionFiles(
+  roots: ClaudeRoots,
+  projectDir: string,
+  scoped: boolean,
+): Rule[] {
+  const files: Rule[] = []
+  const seen = new Set<string>()
+
+  const add = (file: string) => {
+    if (seen.has(file)) return
+    seen.add(file)
+    const paths = scoped ? readRulePaths(file) : undefined
+    if (scoped && !paths) return
+    files.push({ file, ...(paths ? { paths } : {}) })
+  }
+
+  for (const root of [roots.user, roots.project]) {
+    if (!root) continue
+    const rules = path.join(root, "rules")
+    if (isDirectory(rules)) {
+      for (const entry of readDirectoryFiles(rules)) {
+        if (entry.endsWith(".md")) add(entry)
+      }
+    }
+  }
+
   let current = path.resolve(projectDir)
   for (;;) {
     const candidate = path.join(current, "CLAUDE.md")
-    if (isFile(candidate)) files.push(candidate)
+    if (isFile(candidate) && !scoped) add(candidate)
     const rules = path.join(current, ".claude", "rules")
     if (isDirectory(rules)) {
       for (const entry of readDirectoryFiles(rules)) {
-        if (entry.endsWith(".md")) files.push(entry)
+        if (entry.endsWith(".md")) add(entry)
       }
     }
     const parent = path.dirname(current)
     if (parent === current) break
     current = parent
   }
+
   return files
+}
+
+/**
+ * Read the path patterns that scope a rule.
+ *
+ * A rule without patterns applies everywhere, so it is not a scoped rule.
+ */
+function readRulePaths(file: string): string[] | undefined {
+  return rulePaths(file)
+}
+
+/** The file a tool call touches, when it touches one. */
+function touchedPath(tool: string, input: unknown): string | undefined {
+  if (!input || typeof input !== "object") return undefined
+  const source = input as Record<string, unknown>
+  const path = source.path ?? source.filePath
+  if (typeof path !== "string") return undefined
+  if (tool !== "read" && tool !== "edit" && tool !== "write" && tool !== "patch") return undefined
+  return path
+}
+
+/** Format an instruction file for the system prompt. */
+function formatInstruction(file: string, text: string): string {
+  return `<claude_md path="${file}">\n${text}\n</claude_md>`
 }
 
 /** Read a file as text, returning undefined when it cannot be read. */
