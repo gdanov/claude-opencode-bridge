@@ -21,6 +21,10 @@ plugin, hook, or MCP server keeps working after moving to OpenCode.
 | `settings.json` and plugin `hooks/hooks.json` | tool, prompt, and permission hooks | Run as child processes, with Claude Code's JSON protocol |
 | `CLAUDE.md`, `.claude/rules/*.md` | system context | Appended to the request's system prompt |
 
+A rule that carries a `paths` frontmatter field is scoped to files that match
+it. The bridge keeps that behaviour: such a rule is added to the system prompt
+once the session touches a matching file, rather than on every request.
+
 Plugin namespacing follows Claude Code: a plugin's components are reachable as
 `<plugin>:<component>`, so `code-simplifier:code-simplifier` and
 `cloudflare:wrangler` mean what they mean in Claude Code.
@@ -131,13 +135,22 @@ src/claude/hooks.ts      hook configuration parsing and matchers
 src/claude/hook-runner.ts running a hook and reading its decision
 src/claude/tools.ts      translating the tool model between the two tools
 src/claude/models.ts     resolving Claude Code model names
+src/claude/rules.ts      path-scoped rules and their glob patterns
 ```
 
 ## Relationship to plugger
 
 [`@sulesky/opencode-plugger`](https://github.com/kapelan/plugger-open-code)
 does a related job: it installs Claude Code plugins from marketplaces and
-materialises them into OpenCode's own directories. This bridge takes the other
-approach. It reads the Claude Code installation that is already on disk and
-registers it at runtime, so there is no copy of the assets and no install
-step — the Claude Code tree stays the single source of truth.
+materialises them into OpenCode's own directories.
+
+The two differ in approach. Plugger is an installer — it clones plugins and
+writes translated copies into `~/.config/opencode/`. This bridge is a reader: it
+registers the Claude Code installation that is already on disk, at runtime.
+There is no copy of the assets and no install step, so the Claude Code tree
+stays the single source of truth and edits there take effect on reload.
+
+Plugger also targets the OpenCode V1 plugin API, and its published release
+does not load on OpenCode V2 — the server reports that the plugin must export a
+default definition with an `id` and an `effect` or `setup` function. This
+bridge targets the V2 API.
