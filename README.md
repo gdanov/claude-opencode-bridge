@@ -67,7 +67,8 @@ Every option is optional. Pass them in `opencode.json`:
         "mcp": true,
         "hooks": true,
         "instructions": true,
-        "excludePlugins": []
+        "excludePlugins": [],
+        "modelPolicy": "~/.config/opencode/model-policy.json"
       }
     }
   ]
@@ -83,6 +84,7 @@ Every option is optional. Pass them in `opencode.json`:
 | `hooks` | `true` | Run Claude Code hooks |
 | `instructions` | `true` | Load `CLAUDE.md` and `.claude/rules` into the system prompt |
 | `excludePlugins` | `[]` | Plugin names to skip, by name |
+| `modelPolicy` | `~/.config/opencode/model-policy.json` | Path of the model policy file |
 
 `excludePlugins` skips a Claude Code plugin entirely — its assets and its
 hooks. Use it when OpenCode already provides the same integration another way.
@@ -118,12 +120,45 @@ Other Claude Code hook events have no OpenCode counterpart and are skipped.
 
 ## Model names
 
-Claude Code names models with short aliases — `opus`, `sonnet`, `haiku` — or
-with a full model id. OpenCode needs a `provider/model` reference that names a
-model the user actually has. The bridge resolves an alias against the
-available models, preferring an Anthropic model and then the newest match. A
-name that cannot be resolved, and `inherit`, leave the agent on the session's
-model.
+Claude Code names models with short aliases — `fable`, `opus`, `sonnet`, `haiku` — or with a full model id. OpenCode needs a `provider/model` reference that names a model the user actually has.
+
+An alias names a **tier**, and the tier names the model that serves it. The bridge resolves a tier by walking the tier's model families in order and taking the newest free model of the first family the machine has. Families, not versions, so a tier keeps up with the free inventory as it changes. A name that cannot be resolved, and `inherit`, leave the agent on the session's model.
+
+The `effort:` frontmatter of an agent file is a floor on the tier's effort, and the effort selects the model's variant — the model's own effort level, taken as the weakest one that reaches the effort asked for.
+
+The tiers the bridge ships with:
+
+| Alias | Model families, strongest first | Effort |
+| --- | --- | --- |
+| `fable` | minimax, glm, beam | `max` |
+| `opus` | minimax, glm, beam | `high` |
+| `sonnet` | glm, beam, deepseek | `medium` |
+| `haiku` | deepseek, glm, longcat | `low` |
+
+Only free models are selected: a model with a price is never chosen, and a local model never serves a lane.
+
+### The model policy
+
+The policy is a file the human owns, at `~/.config/opencode/model-policy.json`. The bridge reads it and never writes it; a missing file is not an error, and the defaults above stand. The `modelPolicy` option points the bridge at a different file.
+
+```json
+{
+  "providers": ["opencode", "openrouter"],
+  "deny": ["exo", "mimo", "big-pickle", "ll-alpha", "nemotron"],
+  "freeOnly": true,
+  "tiers": {
+    "sonnet": { "families": ["glm", "deepseek"], "effort": "medium" },
+    "scout": { "families": ["deepseek"] }
+  }
+}
+```
+
+| Field | Effect |
+| --- | --- |
+| `providers` | The order providers are preferred in. A provider that is not listed comes last. |
+| `deny` | Model families that need an explicit opt-in. Remove one to allow it. |
+| `freeOnly` | Whether a selected model has to cost nothing. |
+| `tiers` | The tier each alias resolves to. A tier names `families`, an optional `exclude`, and an optional `effort`. A tier the defaults do not have is added. |
 
 ## Development
 
@@ -146,6 +181,7 @@ src/claude/hooks.ts      hook configuration parsing and matchers
 src/claude/hook-runner.ts running a hook and reading its decision
 src/claude/tools.ts      translating the tool model between the two tools
 src/claude/models.ts     resolving Claude Code model names
+src/claude/model-policy.ts  the model policy and the human's policy file
 src/claude/rules.ts      path-scoped rules and their glob patterns
 ```
 
