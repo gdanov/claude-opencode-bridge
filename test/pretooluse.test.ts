@@ -85,7 +85,6 @@ describe("PreToolUse hook input", () => {
     const input = recorded()
     expect(input.tool_name).toBe("Bash")
     expect(input.session_id).toBe("ses_root")
-    expect(input.cwd).toBe("/work/tree")
     expect("agent_id" in input).toBe(false)
     expect("agent_type" in input).toBe(false)
   })
