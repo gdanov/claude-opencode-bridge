@@ -30,7 +30,8 @@ input=$(cat)
 printf '%s' "$input" > '${record}'
 case "$input" in
   *DENYME*) echo "denied by the test hook" >&2; exit 2 ;;
-  *JSONDENY*) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"denied by the test hook as JSON"}}'; exit 0 ;;
+  *JSONDENY*) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"denied by the test hook as JSON","additionalContext":"context of a denied call"}}'; exit 0 ;;
+  *WITHCONTEXT*) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"stale index: run git fetch"}}'; exit 0 ;;
 esac
 `,
   )
@@ -74,9 +75,11 @@ esac
 }
 
 /** An `execute.before` event for a shell call. */
-function shellCall(sessionID: string, agent: string, command: string) {
-  return { tool: "shell", sessionID, agent, messageID: "msg_1", id: "call_1", input: { command } }
+function shellCall(sessionID: string, agent: string, command: string, id = "call_1") {
+  return { tool: "shell", sessionID, agent, messageID: "msg_1", id, input: { command } }
 }
+
+const CONTEXT = "PreToolUse:Bash hook additional context: stale index: run git fetch"
 
 describe("PreToolUse hook input", () => {
   test("carries no agent fields for a call from the primary session", async () => {
@@ -135,5 +138,86 @@ describe("PreToolUse hook input", () => {
     await expect(before(shellCall("ses_root", "build", "echo JSONDENY"))).rejects.toThrow(
       "denied by the test hook as JSON",
     )
+  })
+})
+
+describe("PreToolUse additional context", () => {
+  const sessions = { ses_root: { location: { directory: "/work/tree" } } }
+
+  test("is appended to the text content of the same call's result", async () => {
+    const { before, after } = await installHook(sessions)
+    const call = shellCall("ses_root", "build", "git status WITHCONTEXT")
+    await before(call)
+    const event: any = { ...call, status: "completed", result: { content: "On branch main", metadata: { exit: 0 } } }
+    await after(event)
+    expect(event.result.content).toEqual([
+      { type: "text", text: "On branch main" },
+      { type: "text", text: CONTEXT },
+    ])
+    expect(event.result.metadata).toEqual({ exit: 0 })
+  })
+
+  test("keeps a result's content parts and adds the context after them", async () => {
+    const { before, after } = await installHook(sessions)
+    const call = shellCall("ses_root", "build", "git status WITHCONTEXT")
+    await before(call)
+    const parts = [{ type: "file", uri: "data:image/png;base64,AA==", mime: "image/png" }]
+    const event: any = { ...call, status: "completed", result: { content: parts } }
+    await after(event)
+    expect(event.result.content).toEqual([...parts, { type: "text", text: CONTEXT }])
+  })
+
+  test("carries a structured output into the content it extends", async () => {
+    const { before, after } = await installHook(sessions)
+    const call = shellCall("ses_root", "build", "git status WITHCONTEXT")
+    await before(call)
+    const event: any = { ...call, status: "completed", result: { output: { lines: 2 }, content: [] } }
+    await after(event)
+    expect(event.result.output).toEqual({ lines: 2 })
+    expect(event.result.content).toEqual([
+      { type: "text", text: '{"lines":2}' },
+      { type: "text", text: CONTEXT },
+    ])
+  })
+
+  test("is appended to the error message of a failed call", async () => {
+    const { before, after } = await installHook(sessions)
+    const call = shellCall("ses_root", "build", "git status WITHCONTEXT")
+    await before(call)
+    const event: any = { ...call, status: "error", error: new Error("exit 128") }
+    await after(event)
+    expect(event.error.message).toBe(`exit 128\n\n${CONTEXT}`)
+  })
+
+  test("is delivered once and only to the call that produced it", async () => {
+    const { before, after } = await installHook(sessions)
+    const call = shellCall("ses_root", "build", "git status WITHCONTEXT", "call_1")
+    const other = shellCall("ses_root", "build", "ls", "call_2")
+    await before(call)
+    await before(other)
+
+    const otherEvent: any = { ...other, status: "completed", result: { content: "file" } }
+    await after(otherEvent)
+    expect(otherEvent.result.content).toBe("file")
+
+    const first: any = { ...call, status: "completed", result: { content: "clean" } }
+    await after(first)
+    expect(first.result.content).toEqual([
+      { type: "text", text: "clean" },
+      { type: "text", text: CONTEXT },
+    ])
+
+    const repeat: any = { ...call, status: "completed", result: { content: "clean" } }
+    await after(repeat)
+    expect(repeat.result.content).toBe("clean")
+  })
+
+  test("is dropped when the hook also blocks the call", async () => {
+    const { before, after } = await installHook(sessions)
+    const call = shellCall("ses_root", "build", "echo JSONDENY")
+    await expect(before(call)).rejects.toThrow("denied by the test hook as JSON")
+    const event: any = { ...call, status: "completed", result: { content: "never ran" } }
+    await after(event)
+    expect(event.result.content).toBe("never ran")
   })
 })

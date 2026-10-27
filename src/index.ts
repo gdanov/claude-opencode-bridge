@@ -373,9 +373,12 @@ function readProjectHooks(projectRoot: string): unknown {
  * Install the Claude Code hooks as OpenCode hooks.
  *
  * `PreToolUse` maps onto OpenCode's `tool.execute.before`, which rejects a
- * single tool call without ending the session. `PostToolUse` maps onto
- * `execute.after`. `UserPromptSubmit` maps onto the session prompt hook, and
- * `PermissionRequest` onto the permission evaluation hook.
+ * single tool call without ending the session. `execute.before` has no field
+ * for text the model sees, so the `additionalContext` a `PreToolUse` hook
+ * returns is held per call and appended to that call's result in
+ * `execute.after`. `PostToolUse` maps onto `execute.after`. `UserPromptSubmit`
+ * maps onto the session prompt hook, and `PermissionRequest` onto the
+ * permission evaluation hook.
  */
 function installHooks(
   ctx: any,
@@ -387,19 +390,33 @@ function installHooks(
   const postToolUse = config.PostToolUse ?? []
   const promptSubmit = config.UserPromptSubmit ?? []
   const permissionRequest = config.PermissionRequest ?? []
+  const pendingContext = new Map<string, string>()
 
   if (preToolUse.length > 0) {
     void ctx.tool.hook("execute.before", async (event: any) => {
       const session = await readToolSession(ctx, event, projectDir)
       const outcome = await runPreToolUse(preToolUse, event, session, roots, projectDir)
       if (outcome.block) throw new Error(outcome.reason ?? "blocked by Claude Code hook")
+      if (outcome.additionalContext) {
+        pendingContext.set(
+          toolCallKey(event),
+          `PreToolUse:${toClaudeTool(event.tool)} hook additional context: ${outcome.additionalContext}`,
+        )
+      }
     })
   }
 
-  if (postToolUse.length > 0) {
+  if (preToolUse.length > 0 || postToolUse.length > 0) {
     void ctx.tool.hook("execute.after", async (event: any) => {
-      const session = await readToolSession(ctx, event, projectDir)
-      await runPostToolUse(postToolUse, event, session, roots, projectDir)
+      if (postToolUse.length > 0) {
+        const session = await readToolSession(ctx, event, projectDir)
+        await runPostToolUse(postToolUse, event, session, roots, projectDir)
+      }
+      const key = toolCallKey(event)
+      const context = pendingContext.get(key)
+      if (context === undefined) return
+      pendingContext.delete(key)
+      appendToolContext(event, context)
     })
   }
 
@@ -462,9 +479,10 @@ async function runPreToolUse(
   session: ToolSession,
   roots: ClaudeRoots,
   projectDir: string,
-): Promise<{ block: boolean; reason?: string }> {
+): Promise<{ block: boolean; reason?: string; additionalContext?: string }> {
   const tool = toClaudeTool(event.tool)
   const input = toClaudeToolInput(event.tool, event.input)
+  let additionalContext: string | undefined
   for (const group of groups) {
     if (!matchMatcher(group.matcher, tool)) continue
     for (const hook of group.hooks) {
@@ -476,9 +494,53 @@ async function runPreToolUse(
         projectDir,
       )
       if (outcome.decision.block) return { block: true, reason: outcome.decision.reason }
+      if (outcome.decision.additionalContext) {
+        additionalContext = [additionalContext, outcome.decision.additionalContext]
+          .filter(Boolean)
+          .join("\n\n")
+      }
     }
   }
-  return { block: false }
+  return { block: false, additionalContext }
+}
+
+/** Identify a tool call across its `execute.before` and `execute.after` events. */
+function toolCallKey(event: any): string {
+  return `${event.sessionID}/${event.messageID}/${event.id}`
+}
+
+/**
+ * Append text to what the model sees as a tool call's result.
+ *
+ * OpenCode gives the model a completed call's `content`, or its `output`
+ * when the content is empty, and a failed call's error message.
+ */
+function appendToolContext(event: any, text: string): void {
+  if (event.status === "error") {
+    event.error.message = `${event.error.message}\n\n${text}`
+    return
+  }
+  const content = event.result.content
+  const shown =
+    typeof content === "string"
+      ? [{ type: "text", text: content }]
+      : Array.isArray(content) && content.length > 0
+        ? content
+        : event.result.output === undefined
+          ? []
+          : [{ type: "text", text: formatToolOutput(event.result.output) }]
+  event.result = { ...event.result, content: [...shown, { type: "text", text }] }
+}
+
+/** Format a tool's structured output as text, the way OpenCode shows it to the model. */
+function formatToolOutput(output: unknown): string {
+  if (typeof output === "string") return output
+  try {
+    return JSON.stringify(output) ?? String(output)
+  } catch {
+    // Expected for an output JSON cannot encode, such as a cyclic value; OpenCode falls back the same way.
+    return String(output)
+  }
 }
 
 /** Run the `PostToolUse` hooks for a completed tool call. */

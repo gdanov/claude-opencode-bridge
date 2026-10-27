@@ -111,6 +111,8 @@ A hook that prints `{"decision": "block", "reason": "..."}` blocks for the same
 reason. A hook that prints `permissionDecision: "deny"` denies the call. A
 hook that prints `additionalContext` has its text added to the conversation.
 
+`tool.execute.before` has no field for text the model sees, so a `PreToolUse` hook's `additionalContext` is appended to the result of the same tool call: after the call's output, or after its error message when the call fails. A hook that blocks the call has its `additionalContext` dropped.
+
 Tool names are translated in both directions, because Claude Code calls the
 shell tool `Bash` and OpenCode calls it `shell`. The `if` field on a hook
 handler, which filters it by permission rule such as `Bash(git status:*)`, is
