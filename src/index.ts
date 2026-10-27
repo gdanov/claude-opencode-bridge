@@ -450,6 +450,7 @@ async function readToolSession(ctx: any, event: any, projectDir: string): Promis
       ...(session?.parentID ? { agent: { id: event.sessionID, type: event.agent } } : {}),
     }
   } catch {
+    // Accepted degrade, not reported: a failed lookup must not block the call; the call then reads as the primary session's.
     return { cwd: projectDir }
   }
 }
