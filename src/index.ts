@@ -390,14 +390,16 @@ function installHooks(
 
   if (preToolUse.length > 0) {
     void ctx.tool.hook("execute.before", async (event: any) => {
-      const outcome = await runPreToolUse(preToolUse, event, roots, projectDir)
+      const session = await readToolSession(ctx, event, projectDir)
+      const outcome = await runPreToolUse(preToolUse, event, session, roots, projectDir)
       if (outcome.block) throw new Error(outcome.reason ?? "blocked by Claude Code hook")
     })
   }
 
   if (postToolUse.length > 0) {
     void ctx.tool.hook("execute.after", async (event: any) => {
-      await runPostToolUse(postToolUse, event, roots, projectDir)
+      const session = await readToolSession(ctx, event, projectDir)
+      await runPostToolUse(postToolUse, event, session, roots, projectDir)
     })
   }
 
@@ -424,10 +426,39 @@ function installHooks(
   }
 }
 
+/** The session a tool call runs in, as a Claude Code hook sees it. */
+interface ToolSession {
+  /** Working directory of the session. */
+  readonly cwd: string
+  /** The subagent that made the call; absent for the primary session. */
+  readonly agent?: { readonly id: string; readonly type: string }
+}
+
+/**
+ * Read the session a tool call runs in.
+ *
+ * OpenCode runs a subagent in a child session, so a session with a parent
+ * marks the call as a subagent's, which Claude Code reports as `agent_id` and
+ * `agent_type`. A session that cannot be read leaves the hook with the
+ * project directory and no agent fields.
+ */
+async function readToolSession(ctx: any, event: any, projectDir: string): Promise<ToolSession> {
+  try {
+    const session = await ctx.session.get({ sessionID: event.sessionID })
+    return {
+      cwd: session?.location?.directory ?? projectDir,
+      ...(session?.parentID ? { agent: { id: event.sessionID, type: event.agent } } : {}),
+    }
+  } catch {
+    return { cwd: projectDir }
+  }
+}
+
 /** Run the `PreToolUse` hooks for a tool call. */
 async function runPreToolUse(
   groups: ClaudeHookGroup[],
   event: any,
+  session: ToolSession,
   roots: ClaudeRoots,
   projectDir: string,
 ): Promise<{ block: boolean; reason?: string }> {
@@ -439,7 +470,7 @@ async function runPreToolUse(
       if (hook.if && !matchPermissionRule(hook.if, tool, input)) continue
       const outcome = await runHookCommand(
         hook,
-        buildToolEvent("PreToolUse", event, tool, input),
+        buildToolEvent("PreToolUse", event, session, tool, input),
         roots,
         projectDir,
       )
@@ -453,6 +484,7 @@ async function runPreToolUse(
 async function runPostToolUse(
   groups: ClaudeHookGroup[],
   event: any,
+  session: ToolSession,
   roots: ClaudeRoots,
   projectDir: string,
 ): Promise<void> {
@@ -465,7 +497,7 @@ async function runPostToolUse(
       if (hook.if && !matchPermissionRule(hook.if, tool, input)) continue
       await runHookCommand(
         hook,
-        buildToolEvent("PostToolUse", event, tool, input, response),
+        buildToolEvent("PostToolUse", event, session, tool, input, response),
         roots,
         projectDir,
       )
@@ -540,6 +572,7 @@ async function runPermissionRequest(
 function buildToolEvent(
   name: string,
   event: any,
+  session: ToolSession,
   tool: string,
   input: Record<string, unknown>,
   response?: unknown,
@@ -547,7 +580,8 @@ function buildToolEvent(
   return {
     hook_event_name: name,
     session_id: event.sessionID,
-    cwd: event.cwd,
+    cwd: session.cwd,
+    ...(session.agent ? { agent_id: session.agent.id, agent_type: session.agent.type } : {}),
     tool_name: tool,
     tool_input: input,
     ...(response === undefined ? {} : { tool_response: response }),
