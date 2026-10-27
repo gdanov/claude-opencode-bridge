@@ -512,8 +512,9 @@ function toolCallKey(event: any): string {
 /**
  * Append text to what the model sees as a tool call's result.
  *
- * OpenCode gives the model a completed call's `content`, or its `output`
- * when the content is empty, and a failed call's error message.
+ * OpenCode gives the model a completed call's `content` when it is a string
+ * or a non-empty list, otherwise its `output`, and a failed call's error
+ * message.
  */
 function appendToolContext(event: any, text: string): void {
   if (event.status === "error") {
