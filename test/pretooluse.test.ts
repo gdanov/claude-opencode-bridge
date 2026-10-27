@@ -10,6 +10,14 @@ interface StubSession {
   readonly location: { readonly directory: string }
 }
 
+/** How the probe project configures its hooks. */
+interface HookOptions {
+  /** Configure the hook for `PostToolUse` too; on by default. */
+  readonly postToolUse?: boolean
+  /** Context a second `PreToolUse` hook returns for every call. */
+  readonly secondContext?: string
+}
+
 /**
  * Run the bridge over a project whose `PreToolUse` and `PostToolUse` hook
  * records its input, and return the tool handlers the bridge registers.
@@ -17,7 +25,7 @@ interface StubSession {
  * The hook is a real shell script; only the OpenCode host is stubbed. A
  * session missing from `sessions` makes the session lookup fail.
  */
-async function installHook(sessions: Record<string, StubSession>) {
+async function installHook(sessions: Record<string, StubSession>, options: HookOptions = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "claude-bridge-pretooluse-"))
   const claude = path.join(root, ".claude")
   mkdirSync(claude, { recursive: true })
@@ -37,9 +45,24 @@ esac
   )
   chmodSync(script, 0o755)
   const group = { matcher: "Bash", hooks: [{ type: "command", command: script }] }
+  const second = path.join(root, "second.sh")
+  writeFileSync(
+    second,
+    `#!/bin/sh
+cat > /dev/null
+echo '${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: options.secondContext } })}'
+`,
+  )
+  chmodSync(second, 0o755)
+  const preGroup =
+    options.secondContext === undefined
+      ? group
+      : { ...group, hooks: [...group.hooks, { type: "command", command: second }] }
   writeFileSync(
     path.join(claude, "settings.json"),
-    JSON.stringify({ hooks: { PreToolUse: [group], PostToolUse: [group] } }),
+    JSON.stringify({
+      hooks: { PreToolUse: [preGroup], ...(options.postToolUse === false ? {} : { PostToolUse: [group] }) },
+    }),
   )
 
   const handlers = new Map<string, (event: any) => Promise<void>>()
@@ -155,6 +178,30 @@ describe("PreToolUse additional context", () => {
       { type: "text", text: CONTEXT },
     ])
     expect(event.result.metadata).toEqual({ exit: 0 })
+  })
+
+  test("is delivered in a project that has no PostToolUse hook", async () => {
+    const { before, after } = await installHook(sessions, { postToolUse: false })
+    const call = shellCall("ses_root", "build", "git status WITHCONTEXT")
+    await before(call)
+    const event: any = { ...call, status: "completed", result: { content: "On branch main" } }
+    await after(event)
+    expect(event.result.content).toEqual([
+      { type: "text", text: "On branch main" },
+      { type: "text", text: CONTEXT },
+    ])
+  })
+
+  test("joins the context of every matching hook", async () => {
+    const { before, after } = await installHook(sessions, { secondContext: "second hook says hi" })
+    const call = shellCall("ses_root", "build", "git status WITHCONTEXT")
+    await before(call)
+    const event: any = { ...call, status: "completed", result: { content: "On branch main" } }
+    await after(event)
+    expect(event.result.content).toEqual([
+      { type: "text", text: "On branch main" },
+      { type: "text", text: `${CONTEXT}\n\nsecond hook says hi` },
+    ])
   })
 
   test("keeps a result's content parts and adds the context after them", async () => {
